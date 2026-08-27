@@ -2,20 +2,81 @@
   "collection": "ppc",
   "note": "Paginas conferidas no PDF. Um acerto e o trecho recuperado cobrir alguma das paginas esperadas.",
   "questions": [
-    {"q": "A disciplina Fundamentos de Libras e obrigatoria ou optativa?", "pages": [37, 38]},
-    {"q": "Qual o prazo minimo e maximo para integralizar o curso?", "pages": [27]},
-    {"q": "Qual o turno de oferta e a carga horaria total do curso?", "pages": [11, 12]},
-    {"q": "Qual resolucao autorizou a criacao do curso?", "pages": [1]},
-    {"q": "Quantas horas tem o estagio curricular supervisionado?", "pages": [33, 34]},
-    {"q": "Quantas horas de atividades complementares sao exigidas?", "pages": [32, 33, 34]},
-    {"q": "Como e feita a avaliacao da aprendizagem?", "pages": [54, 55]},
-    {"q": "O que e o Trabalho de Conclusao de Curso?", "pages": [51, 52]},
-    {"q": "Qual o percentual da carga horaria ofertado a distancia?", "pages": [27]},
-    {"q": "Como e o ingresso de estudantes no curso?", "pages": [19, 20]}
+    {
+      "q": "A disciplina Fundamentos de Libras e obrigatoria ou optativa?",
+      "pages": [
+        37,
+        38
+      ]
+    },
+    {
+      "q": "Qual o prazo minimo e maximo para integralizar o curso?",
+      "pages": [
+        27
+      ]
+    },
+    {
+      "q": "Qual o turno de oferta e a carga horaria total do curso?",
+      "pages": [
+        11,
+        12
+      ]
+    },
+    {
+      "q": "Qual resolucao autorizou a criacao do curso?",
+      "pages": [
+        1
+      ]
+    },
+    {
+      "q": "Quantas horas tem o estagio curricular supervisionado?",
+      "pages": [
+        33,
+        34
+      ]
+    },
+    {
+      "q": "Quantas horas de atividades complementares sao exigidas?",
+      "pages": [
+        32,
+        33,
+        34
+      ]
+    },
+    {
+      "q": "Como e feita a avaliacao da aprendizagem?",
+      "pages": [
+        54,
+        55
+      ]
+    },
+    {
+      "q": "O que e o Trabalho de Conclusao de Curso?",
+      "pages": [
+        51,
+        52
+      ]
+    },
+    {
+      "q": "Qual o percentual da carga horaria ofertado a distancia?",
+      "pages": [
+        27
+      ]
+    },
+    {
+      "q": "Como e o ingresso de estudantes no curso?",
+      "pages": [
+        19,
+        20
+      ]
+    }
   ],
   "off_topic": [
     "Qual a receita de bolo de chocolate?",
     "Como trocar o oleo do motor de um carro?",
-    "Qual foi o resultado do jogo de ontem?"
+    "Quem ganhou a copa de 2002?",
+    "Quanto custa o bitcoin hoje?",
+    "Como consertar uma bicicleta?",
+    "Qual a capital da Australia?"
   ]
 }

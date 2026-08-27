@@ -42,6 +42,13 @@ RELATIVE_CUTOFF = float(os.getenv("RAG_RELATIVE_CUTOFF", 0.75))
 # casa um termo por acaso ("copa de 2002" acerta o ano "2002" no PDF).
 ABSTAIN_DENSE = float(os.getenv("RAG_ABSTAIN_DENSE", 0.34))
 
+# ...a menos que o casamento semantico seja forte o bastante para dispensar
+# qualquer ancora lexica. Abaixo disso, a pergunta ainda precisa compartilhar ao
+# menos um termo de conteudo com o corpus: "capital da Australia" chega a 0.36
+# de cosseno contra a pagina que lista municipios, mas nao divide uma palavra
+# sequer com o documento -- e cosseno alto sem termo em comum e coincidencia.
+ABSTAIN_STRONG_DENSE = float(os.getenv("RAG_ABSTAIN_STRONG_DENSE", 0.55))
+
 # Acima disso dois chunks sao considerados o mesmo trecho (efeito do overlap).
 DEDUP_THRESHOLD = float(os.getenv("RAG_DEDUP", 0.95))
 
@@ -62,6 +69,9 @@ COLLECTIONS: dict[str, dict] = {
         "hybrid_alpha": 0.45,
         "min_score": 0.22,
         "relative_cutoff": 0.85,
+        # corpus curto: o cosseno fica naturalmente mais baixo, e quem separa
+        # o que e do assunto e a ancora lexica (aqui ela acerta em cheio)
+        "abstain_dense": 0.20,
     },
     "ppc": {
         "label": "PPC - Sistemas de Informacao (IFTO Paraiso)",
@@ -74,7 +84,10 @@ COLLECTIONS: dict[str, dict] = {
         # documento cheio de termo literal (siglas, numeros de resolucao, nomes
         # de disciplina): o BM25 pesa mais que o denso
         "hybrid_alpha": 0.30,
-        "min_score": 0.25,
+        "min_score": 0.34,
+        # 132 paginas: quase todo termo comum aparece em algum lugar, entao a
+        # ancora lexica sozinha nao basta e o piso denso precisa ser mais alto
+        "abstain_dense": 0.34,
     },
 }
 

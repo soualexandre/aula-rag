@@ -2,16 +2,40 @@
   "collection": "demo",
   "note": "Aqui o gabarito e um trecho literal que o chunk certo precisa conter.",
   "questions": [
-    {"q": "Como se mede a proximidade entre dois vetores?", "contains": "similaridade de cosseno"},
-    {"q": "Qual o tamanho ideal de um chunk?", "contains": "entre 300 e 800"},
-    {"q": "Como evitar trechos repetidos no contexto?", "contains": "Maximal Marginal Relevance"},
-    {"q": "O que acontece se eu trocar o modelo de embedding?", "contains": "invalida o indice"},
-    {"q": "Preciso mesmo de um banco de dados vetorial?", "contains": "matriz numpy em memoria"},
-    {"q": "O que significa a sigla RAG?", "contains": "Retrieval Augmented Generation"},
-    {"q": "O que sao indices aproximados?", "contains": "HNSW"}
+    {
+      "q": "Como se mede a proximidade entre dois vetores?",
+      "contains": "similaridade de cosseno"
+    },
+    {
+      "q": "Qual o tamanho ideal de um chunk?",
+      "contains": "entre 300 e 800"
+    },
+    {
+      "q": "Como evitar trechos repetidos no contexto?",
+      "contains": "Maximal Marginal Relevance"
+    },
+    {
+      "q": "O que acontece se eu trocar o modelo de embedding?",
+      "contains": "invalida o indice"
+    },
+    {
+      "q": "Preciso mesmo de um banco de dados vetorial?",
+      "contains": "matriz numpy em memoria"
+    },
+    {
+      "q": "O que significa a sigla RAG?",
+      "contains": "Retrieval Augmented Generation"
+    },
+    {
+      "q": "O que sao indices aproximados?",
+      "contains": "HNSW"
+    }
   ],
   "off_topic": [
     "Qual a capital da Australia?",
-    "Como fazer pao caseiro?"
+    "Como fazer pao caseiro?",
+    "Quanto custa o bitcoin hoje?",
+    "Quem ganhou a copa de 2002?",
+    "Como consertar uma bicicleta?"
   ]
 }

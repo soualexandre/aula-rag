@@ -17,6 +17,7 @@ import numpy as np
 
 from .config import (
     ABSTAIN_DENSE,
+    ABSTAIN_STRONG_DENSE,
     DEDUP_THRESHOLD,
     HYBRID_ALPHA,
     MIN_SCORE,
@@ -160,14 +161,19 @@ class VectorStore:
 
         q = embed([query])[0]
         dense = self.vectors @ q                 # cosseno (vetores ja normalizados)
-
-        # Abstencao: a pergunta e sobre outro assunto, entao nao ha o que
-        # devolver. Vem antes da fusao de proposito -- o BM25 pode casar um
-        # termo solto por coincidencia e mascarar que nada ali e relevante.
-        if float(dense.max()) < abstain:
-            return []
-
         lexical = self.bm25.scores(query)
+
+        # Abstencao: a pergunta e sobre outro assunto, entao a resposta certa e
+        # nenhum trecho. Os dois sinais precisam concordar que ha algo ali --
+        # cada um sozinho se deixa enganar. O BM25 casa um numero solto ("copa
+        # de 2002" acerta o ano no PDF); o denso acha vizinhanca tematica onde
+        # nao ha assunto em comum ("capital da Australia" contra a pagina de
+        # municipios). Exigir os dois separa os casos reais dos coincidentes.
+        best_dense, best_lexical = float(dense.max()), float(lexical.max())
+        if best_dense < abstain:
+            return []
+        if best_lexical <= 0 and best_dense < ABSTAIN_STRONG_DENSE:
+            return []
         final = fuse(dense, lexical, alpha)
         lexical_norm = saturate(lexical)
 

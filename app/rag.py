@@ -11,8 +11,6 @@ em PDF vivem em indices separados e nunca se misturam num mesmo contexto.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from .chunking import chunk_blocks, chunk_text
 from .config import collection_config, collection_docs_dir
 from .loaders import SUPPORTED_SUFFIXES, load_blocks

@@ -130,16 +130,23 @@ páginas que falam de "disciplina" e "obrigatoriedade" em geral, porque um nome
 próprio que aparece em 3 de 334 chunks se dilui num vetor de 384 dimensões. O
 BM25 faz o oposto: pesa exatamente o termo que quase ninguém usa.
 
-O ranqueamento final soma os dois sinais e passa por três filtros, nesta ordem:
+O ranqueamento passa por estas etapas, nesta ordem:
 
-1. **Fusão** `alpha · denso + (1-alpha) · léxico`. Filtrar antes de fundir tira
+1. **Abstenção** — antes de ranquear, decide se o corpus fala do assunto. Se nem
+   o melhor chunk chega a `abstain_dense` de cosseno, devolve **zero**. E se
+   nenhum termo da pergunta aparece no corpus, exige um casamento semântico
+   forte para não abstenção. É um teste sobre a *pergunta*, não sobre cada
+   resultado — os dois sinais precisam concordar, porque cada um sozinho se
+   deixa enganar: o BM25 casa um número solto (*"copa de 2002"* acerta o ano
+   "2002" no PDF), o denso acha vizinhança temática onde não há assunto em comum
+   (*"capital da Austrália"* contra a página que lista municípios).
+2. **Fusão** `alpha · denso + (1-alpha) · léxico`. Filtrar antes de fundir tira
    do BM25 a chance de resgatar o trecho que o denso enterrou.
-2. **Limiar absoluto** (`min_score`) — pergunta sem resposta no corpus devolve
-   zero trecho, em vez de devolver o "menos ruim".
-3. **Corte relativo ao melhor** (`RELATIVE_CUTOFF`) — se o melhor pontua 0.80 e
+3. **Limiar absoluto** (`min_score`) — descarta o resultado fraco individual.
+4. **Corte relativo ao melhor** (`RELATIVE_CUTOFF`) — se o melhor pontua 0.80 e
    o quarto 0.30, o quarto não é resposta, é enchimento para cumprir a cota.
    **O top-K vira um teto, não uma cota.**
-4. **Deduplicação** — o overlap entre chunks vizinhos gera quase-duplicatas.
+5. **Deduplicação** — o overlap entre chunks vizinhos gera quase-duplicatas.
 
 O BM25 é normalizado por saturação (`x/(x+8)`), não pelo maior da consulta:
 dividir pelo maior faria o melhor casamento virar `1.00` mesmo numa pergunta
@@ -159,15 +166,21 @@ devolver **zero**:
 |---|---|---|---|---|---|---|
 | `demo` | antes (só denso) | 0.71 | 0.714 | 0.214 | 4.0 | 0 |
 | `demo` | **depois** | **1.00** | **0.893** | **0.636** | 1.6 | 0 |
-| `ppc` | antes (só denso) | 0.60 | 0.450 | 0.175 | 4.0 | 4 |
-| `ppc` | **depois** | **1.00** | **0.767** | **0.343** | 3.5 | **0** |
+| `ppc` | antes (só denso) | 0.60 | 0.450 | 0.175 | 4.0 | 12 |
+| `ppc` | **depois** | **1.00** | **0.767** | **0.316** | 3.8 | **0** |
 
 No PPC o algoritmo antigo não trazia **nenhum** trecho correto em 40% das
 perguntas, e respondia 4 trechos a perguntas sobre receita de bolo. Agora as 10
-perguntas acham a resposta e as fora do assunto devolvem zero.
+perguntas acham a resposta e as 6 fora do assunto devolvem zero.
 
 `avg_returned` caindo de 4.0 para 1.6 no `demo` é o corte relativo funcionando:
 quando só existe um trecho relevante, ele devolve um.
+
+Os limiares foram escolhidos contra **consulta curta**, não só contra as frases
+do gabarito: `"Libras"`, `"NDE"`, `"cosseno"`, `"MMR"` produzem cosseno bem mais
+baixo que uma pergunta inteira, e um limiar calibrado só com frases longas
+mataria justamente elas. Na calibragem final, 15 consultas de uma ou duas
+palavras devolvem resposta e 11 perguntas fora do assunto devolvem zero.
 
 ### Cada modo tem a sua calibragem
 
@@ -176,12 +189,19 @@ Os dois corpora pedem ajustes **opostos**, e o sweep mostrou isso:
 | | `demo` | `ppc` |
 |---|---|---|
 | `hybrid_alpha` (peso do denso) | 0.45 | 0.30 |
-| `min_score` | 0.30 | 0.44 |
+| `min_score` | 0.22 | 0.34 |
+| `abstain_dense` | 0.20 | 0.34 |
 | chunk | 600 | 900 |
 
 Prosa didática é escrita com as palavras do leitor, então o denso rende; o PPC é
 cheio de sigla, número de resolução e nome de disciplina, onde o léxico ganha.
 O chunk de 900 no PPC também foi medido — bate 500, 600, 750 e 1200.
+
+Os limiares diferem porque a **escala do cosseno depende do corpus**: com 14
+chunks curtos o `demo` pontua naturalmente mais baixo, e ali quem separa o que é
+do assunto é a âncora léxica. Com 132 páginas, quase todo termo comum aparece em
+algum lugar, a âncora léxica sozinha não basta e o piso denso precisa subir.
+Um limiar global serviria mal aos dois — por isso ele mora na coleção.
 
 Dá para ver o efeito ao vivo: o campo **Denso × léxico** na interface é o
 `alpha`, e cada trecho mostra os dois sinais que o colocaram ali.
@@ -229,6 +249,8 @@ RAG_TOP_K=4                          # teto de trechos, não cota
 RAG_MIN_SCORE=0.30                   # padrão; cada modo pode ter o seu
 RAG_HYBRID_ALPHA=0.4                 # 1 = só embeddings, 0 = só BM25
 RAG_RELATIVE_CUTOFF=0.75             # corta o que fica abaixo de 75% do melhor
+RAG_ABSTAIN_DENSE=0.34               # abaixo disso, a busca devolve zero
+RAG_ABSTAIN_STRONG_DENSE=0.55        # dispensa âncora léxica se o denso for forte
 RAG_DEDUP=0.95
 ```
 
