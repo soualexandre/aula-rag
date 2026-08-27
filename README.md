@@ -73,6 +73,43 @@ py -3 -m venv .venv
 .venv\Scripts\python -m uvicorn app.main:app --reload
 ```
 
+### Windows: `DLL load failed while importing onnxruntime_pybind11_state`
+
+Se o servidor morre no startup com esse erro (`Application startup failed`), o
+problema **não é o código**: é o ONNX Runtime, o motor nativo que o `fastembed`
+usa para rodar o modelo de embedding. As DLLs dele não carregaram. Na ordem de
+probabilidade:
+
+1. **Falta o Visual C++ Redistributable (x64).** É a causa mais comum. Instale
+   [vc_redist.x64.exe](https://aka.ms/vs17/release/vc_redist.x64.exe), feche e
+   reabra o terminal, e rode `run.bat` de novo.
+
+2. **A venv foi criada com o Python do Anaconda.** Dá para reconhecer pelo
+   traceback: aparecem caminhos em `C:\ProgramData\anaconda3\...`. As DLLs do
+   Anaconda entram na frente das do `onnxruntime` e a inicialização falha.
+   Recrie a venv com o Python do [python.org](https://www.python.org/downloads/):
+
+   ```bat
+   rmdir /s /q .venv
+   py -3 -m venv .venv
+   run.bat
+   ```
+
+3. **O `onnxruntime` é mais novo que o runtime do Windows da máquina.** Instale
+   uma versão anterior dentro da venv:
+
+   ```bat
+   .venv\Scripts\python -m pip install "onnxruntime==1.19.2"
+   ```
+
+O `run.bat` já testa `import onnxruntime` antes de subir o servidor e tenta o
+passo 3 sozinho; se ainda assim falhar, ele imprime esta mesma lista. Para ver
+o erro cru a qualquer momento:
+
+```bat
+.venv\Scripts\python -c "import onnxruntime"
+```
+
 A venv do Windows guarda os executáveis em `.venv\Scripts\` (e não em
 `.venv/bin/`). Chamar `.venv\Scripts\python -m <modulo>` funciona sem precisar
 ativar a venv — é o que os exemplos deste README fazem, trocando o prefixo
