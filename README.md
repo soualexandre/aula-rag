@@ -1,20 +1,28 @@
 # RAG Local
 
-Demonstração de **embeddings** e **RAG (etapa de recuperação)** rodando
+Aula de demonstração de **embeddings** e **RAG (etapa de recuperação)**, rodando
 inteiramente na máquina: sem API externa, sem LLM, sem GPU, sem banco vetorial.
 
-Vem com **dois modos** (coleções), alternáveis na interface, na API e na CLI:
+A ideia é deixar cada etapa do pipeline visível e manipulável — dá para ver o
+vetor que um texto gera, comparar a similaridade entre frases, buscar nos
+documentos indexados e ler o prompt final já montado com as citações.
+
+O modelo de embedding é baixado uma única vez (~220 MB) para o cache do
+HuggingFace. Depois disso a aplicação funciona 100% offline.
+
+## Os dois modos
+
+O projeto vem com **duas coleções**, alternáveis na interface, na API e na CLI:
 
 | Modo | Corpus | Chunk |
 |---|---|---|
 | `demo` | três notas curtas em Markdown sobre embeddings, RAG e bancos vetoriais | 600 / 120 |
-| `ppc` | o PPC do Bacharelado em Sistemas de Informação do IFTO Paraíso — **PDF real, 132 páginas** | 900 / 180 |
+| `ppc` | o PPC do Bacharelado em Sistemas de Informação do IFTO Paraíso — PDF real, 132 páginas | 900 / 180 |
 
-Cada modo tem pasta e índice próprios e nunca se misturam num mesmo contexto —
-dá para fazer a mesma pergunta nos dois e comparar os scores.
-
-O modelo de embedding é baixado uma única vez (~220 MB) para o cache do
-HuggingFace. Depois disso a aplicação funciona 100% offline.
+Cada modo tem pasta e índice próprios e nunca se misturam num mesmo contexto.
+O `demo` mostra o mecanismo com um corpus pequeno e legível; o `ppc` mostra o
+mesmo pipeline sobre um documento institucional de verdade, com tabelas,
+resoluções e citação por página.
 
 ## Stack
 
@@ -61,28 +69,113 @@ pronto de uma vez:
 ```bash
 ./.venv/bin/python -m app.cli collections            # lista os modos e o estado de cada índice
 ./.venv/bin/python -m app.cli index --all            # indexa todos
+./.venv/bin/python -m app.cli stats                  # modelo, dimensões, chunks por fonte
 ./.venv/bin/python -m app.cli search  "como escolher o tamanho do chunk"
-./.venv/bin/python -m app.cli -c ppc index
 ./.venv/bin/python -m app.cli -c ppc search  "carga horária total do curso"
 ./.venv/bin/python -m app.cli -c ppc context "como funciona o estágio supervisionado"
+./.venv/bin/python -m app.cli -c ppc eval            # métricas da busca no gabarito
 ./.venv/bin/python -m app.cli compare "gato" "felino doméstico" "carro esportivo"
 ```
+
+`compare` mostra a similaridade de cosseno entre os textos:
 
 ```
 0.6602  'gato' <-> 'felino doméstico'
 0.2128  'gato' <-> 'carro esportivo'
 ```
 
-O mesmo `search` no PPC devolve a página de onde o trecho saiu:
+`search` no PPC mostra os dois sinais do ranqueamento e a página de onde o
+trecho saiu:
 
 ```
 [1] 0.6362  (denso 0.67 | léxico 0.62)  ppc-...pdf, p. 33-34
     ... Quadro 13: Total da carga horária do curso e total de aulas ...
 ```
 
-A separação entre os modos é real: *"Qual a carga horária total do curso?"*
-acha a tabela certa em `ppc` e devolve **zero trecho** em `demo` — nenhum chunk
-de lá passa do limiar, que é o comportamento desejado.
+## O pipeline
+
+```
+INDEXAÇÃO (uma vez por modo)
+  arquivo → blocos (página do PDF) → chunks → embeddings → matriz NumPy → disco
+
+CONSULTA (a cada pergunta)
+  pergunta ─┬→ embedding → cosseno ──┐
+            └→ BM25 léxico ──────────┴→ fusão → filtros → contexto montado
+```
+
+O bloco é a unidade de origem: no Markdown é o arquivo inteiro, no PDF é uma
+página. O metadado do bloco viaja junto com o texto e vira a citação — inclusive
+quando um chunk atravessa a virada de página (`p. 33-34`).
+
+`/api/rag` devolve o **prompt pronto**, com os trechos numerados e citados —
+exatamente o que seria enviado a um LLM. **A geração não acontece**: a demo
+termina no retrieval, de propósito.
+
+## Como a busca funciona
+
+A busca combina dois sinais que se complementam. O **denso** (embeddings)
+encontra paráfrase: acha o trecho certo mesmo quando nenhuma palavra coincide.
+O **léxico** (BM25) pesa o termo exato e raro — sigla, número de resolução, nome
+de disciplina — que num vetor de 384 dimensões acabaria diluído.
+
+O ranqueamento passa por estas etapas, nesta ordem:
+
+1. **Abstenção** — antes de ranquear, decide se o corpus fala do assunto. Se nem
+   o melhor chunk chega a `abstain_dense` de cosseno, devolve **zero**. Se
+   nenhum termo da pergunta aparece no corpus, exige um casamento semântico
+   forte para não abster. É um teste sobre a *pergunta*, não sobre cada
+   resultado, e exige que os dois sinais concordem: o BM25 sozinho casa um
+   número solto (*"copa de 2002"* acerta o ano "2002" no PDF) e o denso sozinho
+   acha vizinhança temática onde não há assunto em comum (*"capital da
+   Austrália"* contra a página que lista municípios).
+2. **Fusão** `alpha · denso + (1-alpha) · léxico`. A fusão vem antes de
+   qualquer filtro, para o BM25 poder resgatar o trecho que o denso enterrou.
+3. **Limiar absoluto** (`min_score`) — descarta o resultado fraco individual.
+4. **Corte relativo ao melhor** (`RELATIVE_CUTOFF`) — se o melhor pontua 0.80 e
+   o quarto 0.30, o quarto não é resposta, é enchimento para cumprir a cota.
+   **O top-K é um teto, não uma cota.**
+5. **Deduplicação** — o overlap entre chunks vizinhos gera quase-duplicatas.
+
+O BM25 é normalizado por saturação (`x/(x+8)`), não pelo maior da consulta:
+dividir pelo maior faria o melhor casamento virar `1.00` mesmo numa pergunta
+fora do assunto, e o limiar perderia o sentido.
+
+Dá para ver o efeito ao vivo: o campo **Denso × léxico** na interface é o
+`alpha`, e cada trecho mostra os dois sinais que o colocaram ali. Com `alpha`
+em 1.0 a busca vira puramente semântica; em 0.0, puramente lexical.
+
+### Cada modo tem a sua calibragem
+
+| | `demo` | `ppc` |
+|---|---|---|
+| `hybrid_alpha` (peso do denso) | 0.45 | 0.30 |
+| `min_score` | 0.22 | 0.34 |
+| `abstain_dense` | 0.20 | 0.34 |
+| chunk | 600 | 900 |
+
+Prosa didática é escrita com as palavras do leitor, então o denso rende; o PPC é
+cheio de sigla, número de resolução e nome de disciplina, onde o léxico ganha.
+
+Os limiares diferem porque a **escala do cosseno depende do corpus**: com poucos
+chunks curtos o `demo` pontua naturalmente mais baixo, e ali quem separa o que é
+do assunto é a âncora léxica. Com 132 páginas, quase todo termo comum aparece em
+algum lugar, a âncora léxica sozinha não basta e o piso denso precisa subir.
+Um limiar global serviria mal aos dois — por isso ele mora na coleção.
+
+### Medindo a busca
+
+`data/eval/*.json` traz perguntas com o gabarito conferido no documento (página,
+no PDF; trecho literal, no Markdown), mais perguntas fora do assunto que devem
+devolver **zero**:
+
+```bash
+./.venv/bin/python -m app.cli -c ppc eval
+```
+
+As métricas são **acerto@k** (a resposta apareceu no top-K), **MRR** (quão no
+topo ela apareceu), **precisão** (fração dos trechos devolvidos que era
+relevante), **devolvidos** (média por pergunta) e **ruído** (trechos devolvidos
+para perguntas fora do assunto — o ideal é 0).
 
 ## Endpoints
 
@@ -104,108 +197,6 @@ omitidos, valem os da coleção. Cada resultado devolve `score` (final), `dense`
 | `GET`  | `/api/stats` | modelo, dimensões, chunks por fonte |
 | `DELETE` | `/api/index` | apaga o índice do modo |
 
-## O pipeline
-
-```
-INDEXAÇÃO (uma vez por modo)
-  arquivo → blocos (página do PDF) → chunks → embeddings → matriz NumPy → disco
-
-CONSULTA (a cada pergunta)
-  pergunta → embedding → cosseno contra os chunks do modo → top-K → contexto montado
-```
-
-O bloco é a unidade de origem: no Markdown é o arquivo inteiro, no PDF é uma
-página. O metadado do bloco viaja junto com o texto e vira a citação — inclusive
-quando um chunk atravessa a virada de página (`p. 33-34`).
-
-`/api/rag` devolve o **prompt pronto**, com os trechos numerados e citados —
-exatamente o que seria enviado a um LLM. **A geração não acontece**: a demo
-termina no retrieval, de propósito.
-
-## Precisão da busca
-
-Busca só por vetor erra numa classe inteira de pergunta: **termo raro e
-literal**. *"Fundamentos de Libras é obrigatória?"* sumia no meio de dezenas de
-páginas que falam de "disciplina" e "obrigatoriedade" em geral, porque um nome
-próprio que aparece em 3 de 334 chunks se dilui num vetor de 384 dimensões. O
-BM25 faz o oposto: pesa exatamente o termo que quase ninguém usa.
-
-O ranqueamento passa por estas etapas, nesta ordem:
-
-1. **Abstenção** — antes de ranquear, decide se o corpus fala do assunto. Se nem
-   o melhor chunk chega a `abstain_dense` de cosseno, devolve **zero**. E se
-   nenhum termo da pergunta aparece no corpus, exige um casamento semântico
-   forte para não abstenção. É um teste sobre a *pergunta*, não sobre cada
-   resultado — os dois sinais precisam concordar, porque cada um sozinho se
-   deixa enganar: o BM25 casa um número solto (*"copa de 2002"* acerta o ano
-   "2002" no PDF), o denso acha vizinhança temática onde não há assunto em comum
-   (*"capital da Austrália"* contra a página que lista municípios).
-2. **Fusão** `alpha · denso + (1-alpha) · léxico`. Filtrar antes de fundir tira
-   do BM25 a chance de resgatar o trecho que o denso enterrou.
-3. **Limiar absoluto** (`min_score`) — descarta o resultado fraco individual.
-4. **Corte relativo ao melhor** (`RELATIVE_CUTOFF`) — se o melhor pontua 0.80 e
-   o quarto 0.30, o quarto não é resposta, é enchimento para cumprir a cota.
-   **O top-K vira um teto, não uma cota.**
-5. **Deduplicação** — o overlap entre chunks vizinhos gera quase-duplicatas.
-
-O BM25 é normalizado por saturação (`x/(x+8)`), não pelo maior da consulta:
-dividir pelo maior faria o melhor casamento virar `1.00` mesmo numa pergunta
-fora do assunto, e o limiar perderia o sentido.
-
-### Medido, não achado
-
-`data/eval/*.json` tem perguntas com o gabarito conferido no documento (página,
-no PDF; trecho literal, no Markdown), mais perguntas fora do assunto que devem
-devolver **zero**:
-
-```bash
-./.venv/bin/python -m app.cli -c ppc eval
-```
-
-| Modo | Config | acerto@4 | MRR | precisão | devolve | ruído |
-|---|---|---|---|---|---|---|
-| `demo` | antes (só denso) | 0.71 | 0.714 | 0.214 | 4.0 | 0 |
-| `demo` | **depois** | **1.00** | **0.893** | **0.636** | 1.6 | 0 |
-| `ppc` | antes (só denso) | 0.60 | 0.450 | 0.175 | 4.0 | 12 |
-| `ppc` | **depois** | **1.00** | **0.767** | **0.316** | 3.8 | **0** |
-
-No PPC o algoritmo antigo não trazia **nenhum** trecho correto em 40% das
-perguntas, e respondia 4 trechos a perguntas sobre receita de bolo. Agora as 10
-perguntas acham a resposta e as 6 fora do assunto devolvem zero.
-
-`avg_returned` caindo de 4.0 para 1.6 no `demo` é o corte relativo funcionando:
-quando só existe um trecho relevante, ele devolve um.
-
-Os limiares foram escolhidos contra **consulta curta**, não só contra as frases
-do gabarito: `"Libras"`, `"NDE"`, `"cosseno"`, `"MMR"` produzem cosseno bem mais
-baixo que uma pergunta inteira, e um limiar calibrado só com frases longas
-mataria justamente elas. Na calibragem final, 15 consultas de uma ou duas
-palavras devolvem resposta e 11 perguntas fora do assunto devolvem zero.
-
-### Cada modo tem a sua calibragem
-
-Os dois corpora pedem ajustes **opostos**, e o sweep mostrou isso:
-
-| | `demo` | `ppc` |
-|---|---|---|
-| `hybrid_alpha` (peso do denso) | 0.45 | 0.30 |
-| `min_score` | 0.22 | 0.34 |
-| `abstain_dense` | 0.20 | 0.34 |
-| chunk | 600 | 900 |
-
-Prosa didática é escrita com as palavras do leitor, então o denso rende; o PPC é
-cheio de sigla, número de resolução e nome de disciplina, onde o léxico ganha.
-O chunk de 900 no PPC também foi medido — bate 500, 600, 750 e 1200.
-
-Os limiares diferem porque a **escala do cosseno depende do corpus**: com 14
-chunks curtos o `demo` pontua naturalmente mais baixo, e ali quem separa o que é
-do assunto é a âncora léxica. Com 132 páginas, quase todo termo comum aparece em
-algum lugar, a âncora léxica sozinha não basta e o piso denso precisa subir.
-Um limiar global serviria mal aos dois — por isso ele mora na coleção.
-
-Dá para ver o efeito ao vivo: o campo **Denso × léxico** na interface é o
-`alpha`, e cada trecho mostra os dois sinais que o colocaram ali.
-
 ## Detalhes que valem notar
 
 - **Vetores normalizados.** Com norma 1, similaridade de cosseno vira produto
@@ -214,8 +205,6 @@ Dá para ver o efeito ao vivo: o campo **Denso × léxico** na interface é o
   frase ou palavra, nunca no meio de uma.
 - **MMR opcional.** O parâmetro `mmr` (0 a 1) penaliza chunks parecidos entre si,
   evitando um contexto com quatro variações do mesmo trecho.
-- **Score mínimo por modo.** Resultados abaixo de `min_score` são descartados —
-  melhor não devolver nada do que devolver ruído.
 - **Stemmer em português.** O BM25 radicaliza os termos, então "obrigatória",
   "obrigatoriamente" e "obrigatório" contam como o mesmo. Números ficam
   inteiros: "3180" e "5.626" são exatamente o que a pergunta cita literalmente.
@@ -246,7 +235,7 @@ RAG_CHUNK_OVERLAP=120
 RAG_PPC_CHUNK_SIZE=900
 RAG_PPC_CHUNK_OVERLAP=180
 RAG_TOP_K=4                          # teto de trechos, não cota
-RAG_MIN_SCORE=0.30                   # padrão; cada modo pode ter o seu
+RAG_MIN_SCORE=0.22                   # padrão; cada modo pode ter o seu
 RAG_HYBRID_ALPHA=0.4                 # 1 = só embeddings, 0 = só BM25
 RAG_RELATIVE_CUTOFF=0.75             # corta o que fica abaixo de 75% do melhor
 RAG_ABSTAIN_DENSE=0.34               # abaixo disso, a busca devolve zero
