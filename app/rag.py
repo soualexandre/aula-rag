@@ -1,72 +1,124 @@
 """Pipeline de RAG (etapa de recuperacao).
 
-Fluxo: documento -> chunks -> embeddings -> indice
+Fluxo: documento -> blocos -> chunks -> embeddings -> indice
        pergunta  -> embedding -> busca por cosseno -> contexto montado
 
 O contexto devolvido e exatamente o bloco de texto que seria injetado no prompt
 de um LLM. Aqui a geracao NAO acontece: a demo termina no retrieval.
+
+Tudo acontece dentro de uma colecao ("modo"): os documentos didaticos e o PPC
+em PDF vivem em indices separados e nunca se misturam num mesmo contexto.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from .chunking import chunk_text
-from .config import DOCS_DIR, MIN_SCORE, TOP_K
-from .store import store
+from .chunking import chunk_blocks, chunk_text
+from .config import collection_config, collection_docs_dir
+from .loaders import SUPPORTED_SUFFIXES, load_blocks
+from .store import Chunk, get_store
 
-TEXT_SUFFIXES = {".md", ".txt", ".markdown"}
 
-
-def ingest_text(source: str, text: str, metadata: dict | None = None) -> dict:
+def ingest_text(
+    source: str, text: str, metadata: dict | None = None, collection: str | None = None
+) -> dict:
     """Indexa (ou reindexa) um texto identificado por `source`."""
+    name, cfg = collection_config(collection)
+    store = get_store(name)
     store.remove_source(source)
-    chunks = chunk_text(text)
+    chunks = chunk_text(text, cfg["chunk_size"], cfg["chunk_overlap"])
     added = store.add(source, chunks, metadata)
     store.save()
-    return {"source": source, "chunks": added, "chars": len(text)}
+    return {"collection": name, "source": source, "chunks": added, "chars": len(text)}
 
 
-def ingest_directory(directory: Path = DOCS_DIR) -> dict:
-    """Indexa todos os arquivos de texto de uma pasta."""
-    directory = Path(directory)
+def ingest_directory(collection: str | None = None) -> dict:
+    """Indexa todos os documentos suportados da pasta da colecao."""
+    name, cfg = collection_config(collection)
+    directory = collection_docs_dir(name)
+    store = get_store(name)
+
     if not directory.exists():
-        return {"files": [], "chunks": 0, "error": f"pasta nao encontrada: {directory}"}
+        return {
+            "collection": name,
+            "files": [],
+            "chunks": 0,
+            "error": f"pasta nao encontrada: {directory}",
+        }
 
     results, total = [], 0
     for path in sorted(directory.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        if not text.strip():
+        blocks = load_blocks(path)
+        if not blocks:
             continue
+        pieces = chunk_blocks(
+            [(b.text, b.metadata) for b in blocks], cfg["chunk_size"], cfg["chunk_overlap"]
+        )
         source = str(path.relative_to(directory))
         store.remove_source(source)
-        chunks = chunk_text(text)
-        total += store.add(source, chunks, {"path": str(path)})
-        results.append({"source": source, "chunks": len(chunks)})
+        total += store.add(
+            source,
+            [p.text for p in pieces],
+            metadata={"path": str(path)},
+            metadatas=[p.metadata for p in pieces],
+        )
+        results.append(
+            {"source": source, "blocks": len(blocks), "chunks": len(pieces)}
+        )
 
     store.save()
-    return {"files": results, "chunks": total}
+    return {"collection": name, "files": results, "chunks": total}
 
 
-def build_context(question: str, top_k: int = TOP_K, min_score: float = MIN_SCORE,
-                  mmr: float = 0.0) -> dict:
-    """Recupera os trechos mais relevantes e monta o contexto do prompt."""
-    hits = store.search(question, top_k=top_k, min_score=min_score, mmr=mmr)
+def citation(chunk: Chunk) -> str:
+    """Como o trecho aparece citado no prompt: arquivo, pagina e chunk."""
+    page = chunk.metadata.get("page")
+    page_end = chunk.metadata.get("page_end")
+    if page and page_end:
+        return f"{chunk.source}, p. {page}-{page_end}"
+    if page:
+        return f"{chunk.source}, p. {page}"
+    return f"{chunk.source} #{chunk.position}"
+
+
+def build_context(
+    question: str,
+    top_k: int | None = None,
+    min_score: float | None = None,
+    mmr: float = 0.0,
+    collection: str | None = None,
+    alpha: float | None = None,
+) -> dict:
+    """Recupera os trechos mais relevantes e monta o contexto do prompt.
+
+    Os parametros nao informados caem no ajuste da propria colecao (ver
+    COLLECTIONS em config.py), que e onde a calibragem de cada corpus mora.
+    """
+    name, _ = collection_config(collection)
+    hits = get_store(name).search(
+        question, top_k=top_k, min_score=min_score, mmr=mmr, alpha=alpha
+    )
 
     passages = [
         {
             "rank": i + 1,
-            "score": round(score, 4),
-            "source": chunk.source,
-            "position": chunk.position,
-            "text": chunk.text,
+            "score": round(h.score, 4),
+            "dense": round(h.dense, 4),
+            "lexical": round(h.lexical, 4),
+            "source": h.chunk.source,
+            "position": h.chunk.position,
+            "page": h.chunk.metadata.get("page"),
+            "page_end": h.chunk.metadata.get("page_end"),
+            "citation": citation(h.chunk),
+            "text": h.chunk.text,
         }
-        for i, (chunk, score) in enumerate(hits)
+        for i, h in enumerate(hits)
     ]
 
     context = "\n\n".join(
-        f"[{p['rank']}] ({p['source']} #{p['position']}, score {p['score']})\n{p['text']}"
+        f"[{p['rank']}] ({p['citation']}, score {p['score']})\n{p['text']}"
         for p in passages
     )
 
@@ -79,6 +131,7 @@ def build_context(question: str, top_k: int = TOP_K, min_score: float = MIN_SCOR
     )
 
     return {
+        "collection": name,
         "question": question,
         "passages": passages,
         "context": context,

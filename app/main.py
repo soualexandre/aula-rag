@@ -5,28 +5,41 @@ import time
 from contextlib import asynccontextmanager
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .config import DOCS_DIR, MIN_SCORE, MODEL_NAME, TOP_K, WEB_DIR
+from .config import (
+    COLLECTIONS,
+    DEFAULT_COLLECTION,
+    HYBRID_ALPHA,
+    MIN_SCORE,
+    MODEL_NAME,
+    TOP_K,
+    WEB_DIR,
+    collection_config,
+    collection_docs_dir,
+)
 from .embeddings import cosine, embed
-from .rag import build_context, ingest_directory, ingest_text
-from .store import store
+from .rag import build_context, citation, ingest_directory, ingest_text
+from .store import get_store
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # O indice ja e carregado do disco no import de app.store; se estiver vazio,
-    # faz a primeira indexacao a partir de data/docs.
+    # Indexa so a colecao padrao no startup: indexar o PPC inteiro levaria
+    # dezenas de segundos e nem toda execucao vai usar esse modo. As outras
+    # sao indexadas sob demanda (botao na UI, /api/ingest/docs ou a CLI).
+    store = get_store(DEFAULT_COLLECTION)
     if not store.chunks:
-        ingest_directory(DOCS_DIR)
+        ingest_directory(DEFAULT_COLLECTION)
     yield
 
 
 app = FastAPI(
     title="RAG Local",
-    description="Demo de embeddings e retrieval 100% offline (sem LLM).",
+    description="Demo de embeddings e retrieval 100% offline (sem LLM), "
+    "com colecoes alternaveis: notas didaticas ou um PDF real de 132 paginas.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -45,13 +58,34 @@ class CompareRequest(BaseModel):
 class IngestTextRequest(BaseModel):
     source: str
     text: str
+    collection: str | None = Field(None, description="Colecao alvo; None = a padrao")
+
+
+class IngestDocsRequest(BaseModel):
+    collection: str | None = None
 
 
 class SearchRequest(BaseModel):
+    """Campos nao informados caem no ajuste calibrado da propria colecao."""
+
     query: str
-    top_k: int = TOP_K
-    min_score: float = MIN_SCORE
+    top_k: int | None = Field(None, description=f"Teto de trechos (padrao {TOP_K})")
+    min_score: float | None = Field(None, description="Score minimo para entrar no contexto")
     mmr: float = Field(0.0, ge=0.0, le=1.0, description="0 = so relevancia, 0.5 = diversifica")
+    alpha: float | None = Field(
+        None, ge=0.0, le=1.0,
+        description="Peso do sinal denso na fusao: 1 = so embeddings, 0 = so BM25",
+    )
+    collection: str | None = Field(None, description="Em qual colecao buscar; None = a padrao")
+
+
+def resolve(collection: str | None) -> str:
+    """Valida o nome da colecao e devolve 404 se nao existir."""
+    try:
+        name, _ = collection_config(collection)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return name
 
 
 # ---------------------------------------------------------------------- rotas
@@ -60,9 +94,32 @@ def ui():
     return FileResponse(WEB_DIR / "index.html")
 
 
+@app.get("/api/collections")
+def api_collections():
+    """Os modos disponiveis e o estado do indice de cada um."""
+    return {
+        "default": DEFAULT_COLLECTION,
+        "collections": [
+            {
+                "name": name,
+                "label": cfg["label"],
+                "description": cfg["description"],
+                "sample_question": cfg["sample_question"],
+                "chunk_size": cfg["chunk_size"],
+                "chunk_overlap": cfg["chunk_overlap"],
+                "hybrid_alpha": cfg.get("hybrid_alpha", HYBRID_ALPHA),
+                "min_score": cfg.get("min_score", MIN_SCORE),
+                "docs_dir": str(collection_docs_dir(name)),
+                "chunks": get_store(name).stats()["chunks"],
+            }
+            for name, cfg in COLLECTIONS.items()
+        ],
+    }
+
+
 @app.get("/api/stats")
-def stats():
-    return {"model": MODEL_NAME, **store.stats()}
+def stats(collection: str | None = Query(None)):
+    return {"model": MODEL_NAME, **get_store(resolve(collection)).stats()}
 
 
 @app.post("/api/embed")
@@ -114,31 +171,40 @@ def api_compare(req: CompareRequest):
 def api_ingest_text(req: IngestTextRequest):
     if not req.text.strip():
         raise HTTPException(400, "texto vazio")
-    return ingest_text(req.source, req.text)
+    return ingest_text(req.source, req.text, collection=resolve(req.collection))
 
 
 @app.post("/api/ingest/docs")
-def api_ingest_docs():
-    """Reindexa a pasta data/docs."""
-    return ingest_directory(DOCS_DIR)
+def api_ingest_docs(req: IngestDocsRequest | None = None):
+    """Reindexa a pasta de documentos da colecao (data/docs/<colecao>)."""
+    name = resolve(req.collection if req else None)
+    return ingest_directory(name)
 
 
 @app.post("/api/search")
 def api_search(req: SearchRequest):
     """Busca semantica pura: devolve os chunks mais proximos da pergunta."""
+    name = resolve(req.collection)
     started = time.perf_counter()
-    hits = store.search(req.query, top_k=req.top_k, min_score=req.min_score, mmr=req.mmr)
+    hits = get_store(name).search(
+        req.query, top_k=req.top_k, min_score=req.min_score, mmr=req.mmr, alpha=req.alpha
+    )
     return {
+        "collection": name,
         "query": req.query,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 1),
         "results": [
             {
-                "score": round(score, 4),
-                "source": c.source,
-                "position": c.position,
-                "text": c.text,
+                "score": round(h.score, 4),
+                "dense": round(h.dense, 4),
+                "lexical": round(h.lexical, 4),
+                "source": h.chunk.source,
+                "position": h.chunk.position,
+                "page": h.chunk.metadata.get("page"),
+                "citation": citation(h.chunk),
+                "text": h.chunk.text,
             }
-            for c, score in hits
+            for h in hits
         ],
     }
 
@@ -147,13 +213,21 @@ def api_search(req: SearchRequest):
 def api_rag(req: SearchRequest):
     """Retrieval + montagem do contexto/prompt (sem chamar LLM)."""
     started = time.perf_counter()
-    result = build_context(req.query, top_k=req.top_k, min_score=req.min_score, mmr=req.mmr)
+    result = build_context(
+        req.query,
+        top_k=req.top_k,
+        min_score=req.min_score,
+        mmr=req.mmr,
+        alpha=req.alpha,
+        collection=resolve(req.collection),
+    )
     result["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 1)
     return result
 
 
 @app.delete("/api/index")
-def api_clear():
+def api_clear(collection: str | None = Query(None)):
+    store = get_store(resolve(collection))
     store.clear()
     store.save()
     return {"cleared": True, **store.stats()}

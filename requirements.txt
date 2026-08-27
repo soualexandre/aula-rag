@@ -2,3 +2,5 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 fastembed>=0.4
 numpy>=1.26
+pypdf>=5.0
+py_rust_stemmers>=0.1   # radicalizacao PT para o BM25 (ja vem com o fastembed)

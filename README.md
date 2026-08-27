@@ -3,6 +3,16 @@
 Demonstração de **embeddings** e **RAG (etapa de recuperação)** rodando
 inteiramente na máquina: sem API externa, sem LLM, sem GPU, sem banco vetorial.
 
+Vem com **dois modos** (coleções), alternáveis na interface, na API e na CLI:
+
+| Modo | Corpus | Chunk |
+|---|---|---|
+| `demo` | três notas curtas em Markdown sobre embeddings, RAG e bancos vetoriais | 600 / 120 |
+| `ppc` | o PPC do Bacharelado em Sistemas de Informação do IFTO Paraíso — **PDF real, 132 páginas** | 900 / 180 |
+
+Cada modo tem pasta e índice próprios e nunca se misturam num mesmo contexto —
+dá para fazer a mesma pergunta nos dois e comparar os scores.
+
 O modelo de embedding é baixado uma única vez (~220 MB) para o cache do
 HuggingFace. Depois disso a aplicação funciona 100% offline.
 
@@ -14,6 +24,8 @@ HuggingFace. Depois disso a aplicação funciona 100% offline.
 | Embeddings | `fastembed` (ONNX Runtime) | roda em CPU, **sem PyTorch** |
 | Modelo | `paraphrase-multilingual-MiniLM-L12-v2` (384 dim) | multilíngue, funciona em PT |
 | Índice | matriz NumPy + produto escalar | busca exata em ms, sem dependência extra |
+| Ranqueamento | híbrido: denso + BM25 léxico | acerta paráfrase **e** termo literal |
+| PDF | `pypdf` | extração de texto por página, sem OCR |
 | UI | um HTML sem build | zero toolchain |
 
 ## Como rodar
@@ -31,15 +43,28 @@ python3 -m venv .venv
 ```
 
 Abra <http://127.0.0.1:8000> para a interface e <http://127.0.0.1:8000/docs>
-para o Swagger. Na primeira execução a pasta `data/docs/` é indexada
-automaticamente.
+para o Swagger.
+
+No startup só o modo padrão (`demo`) é indexado — indexar o PPC inteiro leva
+alguns segundos e nem toda execução precisa dele. Ao trocar para um modo ainda
+não indexado a interface mostra um botão **Indexar agora**. Para deixar tudo
+pronto de uma vez:
+
+```bash
+./.venv/bin/python -m app.cli index --all
+```
 
 ## Pelo terminal
 
+`-c/--collection` escolhe o modo e vem **antes** do comando (padrão: `demo`):
+
 ```bash
-./.venv/bin/python -m app.cli index
+./.venv/bin/python -m app.cli collections            # lista os modos e o estado de cada índice
+./.venv/bin/python -m app.cli index --all            # indexa todos
 ./.venv/bin/python -m app.cli search  "como escolher o tamanho do chunk"
-./.venv/bin/python -m app.cli context "como escolher o tamanho do chunk"
+./.venv/bin/python -m app.cli -c ppc index
+./.venv/bin/python -m app.cli -c ppc search  "carga horária total do curso"
+./.venv/bin/python -m app.cli -c ppc context "como funciona o estágio supervisionado"
 ./.venv/bin/python -m app.cli compare "gato" "felino doméstico" "carro esportivo"
 ```
 
@@ -48,32 +73,118 @@ automaticamente.
 0.2128  'gato' <-> 'carro esportivo'
 ```
 
+O mesmo `search` no PPC devolve a página de onde o trecho saiu:
+
+```
+[1] 0.6362  (denso 0.67 | léxico 0.62)  ppc-...pdf, p. 33-34
+    ... Quadro 13: Total da carga horária do curso e total de aulas ...
+```
+
+A separação entre os modos é real: *"Qual a carga horária total do curso?"*
+acha a tabela certa em `ppc` e devolve **zero trecho** em `demo` — nenhum chunk
+de lá passa do limiar, que é o comportamento desejado.
+
 ## Endpoints
+
+Todas as rotas de busca e ingestão aceitam `collection` (no corpo JSON ou como
+query string); omitir usa o modo padrão. Um nome inexistente devolve 404.
+`/api/search` e `/api/rag` aceitam ainda `top_k`, `min_score`, `alpha` e `mmr` —
+omitidos, valem os da coleção. Cada resultado devolve `score` (final), `dense` e
+`lexical`, dá para ver qual sinal sustentou o trecho.
 
 | Método | Rota | O que faz |
 |---|---|---|
+| `GET`  | `/api/collections` | modos disponíveis e chunks indexados em cada um |
 | `POST` | `/api/embed` | mostra o vetor gerado para cada texto |
 | `POST` | `/api/compare` | matriz de similaridade de cosseno entre textos |
-| `POST` | `/api/search` | busca semântica nos chunks indexados |
+| `POST` | `/api/search` | busca híbrida nos chunks indexados |
 | `POST` | `/api/rag` | busca + monta o contexto/prompt final |
 | `POST` | `/api/ingest/text` | indexa um texto avulso |
-| `POST` | `/api/ingest/docs` | reindexa `data/docs/` |
+| `POST` | `/api/ingest/docs` | reindexa `data/docs/<modo>/` |
 | `GET`  | `/api/stats` | modelo, dimensões, chunks por fonte |
-| `DELETE` | `/api/index` | apaga o índice |
+| `DELETE` | `/api/index` | apaga o índice do modo |
 
 ## O pipeline
 
 ```
-INDEXAÇÃO (uma vez)
-  documento → chunks (600 chars, 120 de overlap) → embeddings → matriz NumPy → disco
+INDEXAÇÃO (uma vez por modo)
+  arquivo → blocos (página do PDF) → chunks → embeddings → matriz NumPy → disco
 
 CONSULTA (a cada pergunta)
-  pergunta → embedding → cosseno contra todos os chunks → top-K → contexto montado
+  pergunta → embedding → cosseno contra os chunks do modo → top-K → contexto montado
 ```
+
+O bloco é a unidade de origem: no Markdown é o arquivo inteiro, no PDF é uma
+página. O metadado do bloco viaja junto com o texto e vira a citação — inclusive
+quando um chunk atravessa a virada de página (`p. 33-34`).
 
 `/api/rag` devolve o **prompt pronto**, com os trechos numerados e citados —
 exatamente o que seria enviado a um LLM. **A geração não acontece**: a demo
 termina no retrieval, de propósito.
+
+## Precisão da busca
+
+Busca só por vetor erra numa classe inteira de pergunta: **termo raro e
+literal**. *"Fundamentos de Libras é obrigatória?"* sumia no meio de dezenas de
+páginas que falam de "disciplina" e "obrigatoriedade" em geral, porque um nome
+próprio que aparece em 3 de 334 chunks se dilui num vetor de 384 dimensões. O
+BM25 faz o oposto: pesa exatamente o termo que quase ninguém usa.
+
+O ranqueamento final soma os dois sinais e passa por três filtros, nesta ordem:
+
+1. **Fusão** `alpha · denso + (1-alpha) · léxico`. Filtrar antes de fundir tira
+   do BM25 a chance de resgatar o trecho que o denso enterrou.
+2. **Limiar absoluto** (`min_score`) — pergunta sem resposta no corpus devolve
+   zero trecho, em vez de devolver o "menos ruim".
+3. **Corte relativo ao melhor** (`RELATIVE_CUTOFF`) — se o melhor pontua 0.80 e
+   o quarto 0.30, o quarto não é resposta, é enchimento para cumprir a cota.
+   **O top-K vira um teto, não uma cota.**
+4. **Deduplicação** — o overlap entre chunks vizinhos gera quase-duplicatas.
+
+O BM25 é normalizado por saturação (`x/(x+8)`), não pelo maior da consulta:
+dividir pelo maior faria o melhor casamento virar `1.00` mesmo numa pergunta
+fora do assunto, e o limiar perderia o sentido.
+
+### Medido, não achado
+
+`data/eval/*.json` tem perguntas com o gabarito conferido no documento (página,
+no PDF; trecho literal, no Markdown), mais perguntas fora do assunto que devem
+devolver **zero**:
+
+```bash
+./.venv/bin/python -m app.cli -c ppc eval
+```
+
+| Modo | Config | acerto@4 | MRR | precisão | devolve | ruído |
+|---|---|---|---|---|---|---|
+| `demo` | antes (só denso) | 0.71 | 0.714 | 0.214 | 4.0 | 0 |
+| `demo` | **depois** | **1.00** | **0.893** | **0.636** | 1.6 | 0 |
+| `ppc` | antes (só denso) | 0.60 | 0.450 | 0.175 | 4.0 | 4 |
+| `ppc` | **depois** | **1.00** | **0.767** | **0.343** | 3.5 | **0** |
+
+No PPC o algoritmo antigo não trazia **nenhum** trecho correto em 40% das
+perguntas, e respondia 4 trechos a perguntas sobre receita de bolo. Agora as 10
+perguntas acham a resposta e as fora do assunto devolvem zero.
+
+`avg_returned` caindo de 4.0 para 1.6 no `demo` é o corte relativo funcionando:
+quando só existe um trecho relevante, ele devolve um.
+
+### Cada modo tem a sua calibragem
+
+Os dois corpora pedem ajustes **opostos**, e o sweep mostrou isso:
+
+| | `demo` | `ppc` |
+|---|---|---|
+| `hybrid_alpha` (peso do denso) | 0.45 | 0.30 |
+| `min_score` | 0.30 | 0.44 |
+| chunk | 600 | 900 |
+
+Prosa didática é escrita com as palavras do leitor, então o denso rende; o PPC é
+cheio de sigla, número de resolução e nome de disciplina, onde o léxico ganha.
+O chunk de 900 no PPC também foi medido — bate 500, 600, 750 e 1200.
+
+Dá para ver o efeito ao vivo: o campo **Denso × léxico** na interface é o
+`alpha`, e cada trecho mostra os dois sinais que o colocaram ali.
 
 ## Detalhes que valem notar
 
@@ -83,10 +194,25 @@ termina no retrieval, de propósito.
   frase ou palavra, nunca no meio de uma.
 - **MMR opcional.** O parâmetro `mmr` (0 a 1) penaliza chunks parecidos entre si,
   evitando um contexto com quatro variações do mesmo trecho.
-- **Score mínimo.** Resultados abaixo de `min_score` (0.15) são descartados —
+- **Score mínimo por modo.** Resultados abaixo de `min_score` são descartados —
   melhor não devolver nada do que devolver ruído.
+- **Stemmer em português.** O BM25 radicaliza os termos, então "obrigatória",
+  "obrigatoriamente" e "obrigatório" contam como o mesmo. Números ficam
+  inteiros: "3180" e "5.626" são exatamente o que a pergunta cita literalmente.
 - **Trocar de modelo invalida o índice.** `app/store.py` detecta a mudança de
   dimensão e força reindexação.
+- **PDF sem OCR.** `pypdf` extrai o texto embutido; um PDF escaneado não
+  funcionaria. As 132 páginas do PPC saem em ~7 s (334 chunks).
+- **Cabeçalho é ruído.** Toda página do PPC repete 8 linhas de timbre
+  institucional. O loader descarta qualquer linha presente em ≥60% das páginas —
+  no PPC isso pega exatamente o timbre (100%) e preserva os títulos de seção
+  reais, cujo mais frequente aparece em 33%.
+- **Linha de PDF não é parágrafo.** O texto extraído quebra a cada linha
+  impressa; o loader remonta os parágrafos, mantendo separados os títulos, os
+  itens de lista, os artigos de regulamento e as células de tabela.
+- **Chunk por modo.** Nota didática pede chunk pequeno (600) para não misturar
+  assuntos; documento formal pede chunk maior (900) para não cortar um artigo ou
+  uma tabela ao meio.
 
 ## Configuração
 
@@ -94,24 +220,39 @@ Tudo por variável de ambiente (ver `app/config.py`):
 
 ```bash
 RAG_MODEL="BAAI/bge-small-en-v1.5"   # alternativa mais leve: 67 MB, só inglês
+RAG_COLLECTION=demo                  # modo padrão
 RAG_CHUNK_SIZE=600
 RAG_CHUNK_OVERLAP=120
-RAG_TOP_K=4
-RAG_MIN_SCORE=0.15
+RAG_PPC_CHUNK_SIZE=900
+RAG_PPC_CHUNK_OVERLAP=180
+RAG_TOP_K=4                          # teto de trechos, não cota
+RAG_MIN_SCORE=0.30                   # padrão; cada modo pode ter o seu
+RAG_HYBRID_ALPHA=0.4                 # 1 = só embeddings, 0 = só BM25
+RAG_RELATIVE_CUTOFF=0.75             # corta o que fica abaixo de 75% do melhor
+RAG_DEDUP=0.95
 ```
+
+Para adicionar um terceiro modo, basta uma entrada em `COLLECTIONS`
+(`app/config.py`) e uma pasta `data/docs/<nome>/` com os arquivos.
 
 ## Estrutura
 
 ```
 app/
-  config.py      configuração via env
-  chunking.py    quebra de texto em chunks com overlap
+  config.py      configuração via env + registro das coleções (modos)
+  loaders.py     leitura de .md/.txt e de PDF (limpeza de timbre, parágrafos)
+  chunking.py    quebra em chunks com overlap, preservando a origem
   embeddings.py  wrapper do modelo ONNX (lazy, singleton)
-  store.py       vector store NumPy + persistência
+  retrieval.py   BM25 léxico, fusão com o denso e filtros de precisão
+  evaluation.py  métricas contra o gabarito (acerto@k, MRR, precisão, ruído)
+  store.py       vector store NumPy + persistência, um por coleção
   rag.py         pipeline: ingestão e montagem de contexto
   main.py        API FastAPI
   cli.py         interface de terminal
 web/index.html   UI sem build
-data/docs/       documentos de exemplo (sobre embeddings e RAG)
-data/index/      índice gerado (vectors.npy + chunks.json)
+data/docs/demo/  notas didáticas em Markdown
+data/docs/ppc/   o PPC em PDF (132 páginas)
+data/eval/       gabaritos conferidos no documento, por modo
+data/index/demo/ índice do modo demo (vectors.npy + chunks.json)
+data/index/ppc/  índice do modo ppc
 ```
