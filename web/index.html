@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG Local — embeddings offline</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --line:#e3e2dd; --fg:#1c1b19; --muted:#6f6d67;
+    --accent:#c2603a; --accent-soft:#fbeee8; --code:#f2f1ed;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#171614; --panel:#1f1e1b; --line:#332f2a; --fg:#eceae5; --muted:#a09c94;
+           --accent:#e08760; --accent-soft:#2b211c; --code:#141311; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:940px;margin:0 auto;padding:32px 20px 72px}
+  header h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+  header p{margin:0;color:var(--muted);font-size:14px}
+  .stats{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 24px}
+  .pill{background:var(--panel);border:1px solid var(--line);border-radius:999px;
+        padding:5px 12px;font-size:12.5px;color:var(--muted)}
+  .pill b{color:var(--fg);font-weight:600}
+  nav{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:20px}
+  nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+             padding:9px 14px;font:inherit;font-size:14px;cursor:pointer}
+  nav button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  input,textarea,select{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);
+        border-radius:8px;padding:10px 12px;font:inherit;font-size:14px}
+  textarea{min-height:90px;resize:vertical}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
+  .row>div{flex:1;min-width:120px}
+  button.go{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px 18px;
+            font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+  button.go:disabled{opacity:.5;cursor:progress}
+  button.ghost{background:none;border:1px solid var(--line);color:var(--fg);border-radius:8px;
+               padding:10px 14px;font:inherit;cursor:pointer}
+  .hit{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:12px;background:var(--bg)}
+  .hit-head{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+  .score{font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600}
+  .bar{height:4px;background:var(--line);border-radius:2px;overflow:hidden;margin-top:8px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px;
+      overflow-x:auto;font-size:12.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+  .muted{color:var(--muted);font-size:13px}
+  h3{font-size:14px;margin:22px 0 8px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:center;font-variant-numeric:tabular-nums}
+  th{color:var(--muted);font-weight:500;text-align:left}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>RAG Local</h1>
+    <p>Embeddings e busca semântica rodando inteiramente na sua máquina — sem LLM, sem rede.</p>
+  </header>
+
+  <div class="stats" id="stats"><span class="pill">carregando…</span></div>
+
+  <nav>
+    <button data-tab="rag" aria-selected="true">Buscar</button>
+    <button data-tab="embed" aria-selected="false">Embedding</button>
+    <button data-tab="compare" aria-selected="false">Comparar</button>
+    <button data-tab="ingest" aria-selected="false">Indexar</button>
+  </nav>
+
+  <!-- ------------------------------------------------------------ RAG -->
+  <section class="panel" id="tab-rag">
+    <label for="q">Pergunta</label>
+    <input id="q" value="Por que dividir os documentos em pedaços?" />
+    <div class="row">
+      <div><label for="k">Top-K</label><input id="k" type="number" value="4" min="1" max="20"></div>
+      <div><label for="min">Score mínimo</label><input id="min" type="number" value="0.15" step="0.05"></div>
+      <div><label for="mmr">MMR (diversidade)</label><input id="mmr" type="number" value="0" step="0.1" min="0" max="1"></div>
+      <button class="go" id="btn-rag">Buscar</button>
+    </div>
+    <div id="rag-out"></div>
+  </section>
+
+  <!-- ------------------------------------------------------ EMBEDDING -->
+  <section class="panel hidden" id="tab-embed">
+    <label for="etexts">Textos (um por linha)</label>
+    <textarea id="etexts">gato
+felino doméstico
+carro esportivo</textarea>
+    <div class="row"><button class="go" id="btn-embed">Gerar vetores</button></div>
+    <div id="embed-out"></div>
+  </section>
+
+  <!-- -------------------------------------------------------- COMPARAR -->
+  <section class="panel hidden" id="tab-compare">
+    <label for="ctexts">Textos (um por linha, mínimo 2)</label>
+    <textarea id="ctexts">como troco minha senha
+redefinição de credenciais de acesso
+qual o horário de funcionamento</textarea>
+    <div class="row"><button class="go" id="btn-compare">Comparar</button></div>
+    <div id="compare-out"></div>
+  </section>
+
+  <!-- ---------------------------------------------------------- INGEST -->
+  <section class="panel hidden" id="tab-ingest">
+    <label for="isource">Identificador do documento</label>
+    <input id="isource" value="anotacao.md">
+    <label for="itext" style="margin-top:12px">Conteúdo</label>
+    <textarea id="itext" placeholder="Cole aqui um texto para indexar…"></textarea>
+    <div class="row">
+      <button class="go" id="btn-ingest">Indexar texto</button>
+      <button class="ghost" id="btn-reindex">Reindexar data/docs</button>
+      <button class="ghost" id="btn-clear">Limpar índice</button>
+    </div>
+    <div id="ingest-out"></div>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function api(path, body, method='POST'){
+  const res = await fetch('/api'+path, {
+    method,
+    headers: body ? {'Content-Type':'application/json'} : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if(!res.ok) throw new Error((await res.text()).slice(0,300));
+  return res.json();
+}
+
+async function busy(btn, fn){
+  btn.disabled = true;
+  try { await fn(); }
+  catch(e){ alert('Erro: '+e.message); }
+  finally { btn.disabled = false; }
+}
+
+// ---------------------------------------------------------------- tabs
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.setAttribute('aria-selected', x===b));
+  document.querySelectorAll('section.panel').forEach(s => s.classList.add('hidden'));
+  $('#tab-'+b.dataset.tab).classList.remove('hidden');
+});
+
+// --------------------------------------------------------------- stats
+async function refreshStats(){
+  const s = await api('/stats', null, 'GET');
+  const srcs = Object.entries(s.sources).map(([k,v]) => `${k} (${v})`).join(', ') || '—';
+  $('#stats').innerHTML =
+    `<span class="pill">modelo <b>${esc(s.model.split('/').pop())}</b></span>` +
+    `<span class="pill">dimensões <b>${s.dimension}</b></span>` +
+    `<span class="pill">chunks <b>${s.chunks}</b></span>` +
+    `<span class="pill">fontes <b>${esc(srcs)}</b></span>`;
+}
+
+// ----------------------------------------------------------------- RAG
+$('#btn-rag').onclick = () => busy($('#btn-rag'), async () => {
+  const r = await api('/rag', {
+    query: $('#q').value,
+    top_k: +$('#k').value,
+    min_score: +$('#min').value,
+    mmr: +$('#mmr').value,
+  });
+  const hits = r.passages.map(p => `
+    <div class="hit">
+      <div class="hit-head">
+        <span>[${p.rank}] ${esc(p.source)} · chunk #${p.position}</span>
+        <span class="score">${p.score.toFixed(4)}</span>
+      </div>
+      <div>${esc(p.text)}</div>
+      <div class="bar"><i style="width:${Math.max(0,Math.min(1,p.score))*100}%"></i></div>
+    </div>`).join('');
+  $('#rag-out').innerHTML =
+    `<h3>Trechos recuperados · ${r.elapsed_ms} ms</h3>` +
+    (hits || '<p class="muted">Nenhum trecho acima do score mínimo.</p>') +
+    `<h3>Prompt montado (não enviado a nenhum LLM)</h3><pre>${esc(r.prompt)}</pre>` +
+    `<p class="muted">${esc(r.note)}</p>`;
+});
+
+// ----------------------------------------------------------- embedding
+$('#btn-embed').onclick = () => busy($('#btn-embed'), async () => {
+  const texts = $('#etexts').value.split('\n').map(t=>t.trim()).filter(Boolean);
+  const r = await api('/embed', { texts, preview: 8 });
+  $('#embed-out').innerHTML =
+    `<h3>${r.dimension} dimensões · ${r.elapsed_ms} ms</h3>` +
+    r.items.map(it => `
+      <div class="hit">
+        <div class="hit-head"><span>${esc(it.text)}</span><span class="score">‖v‖ = ${it.norm}</span></div>
+        <pre>[${it.vector_preview.join(', ')}, … ] (${r.dimension} valores)</pre>
+      </div>`).join('');
+});
+
+// ------------------------------------------------------------ comparar
+$('#btn-compare').onclick = () => busy($('#btn-compare'), async () => {
+  const texts = $('#ctexts').value.split('\n').map(t=>t.trim()).filter(Boolean);
+  const r = await api('/compare', { texts });
+  const head = '<tr><th></th>' + r.texts.map((_,i)=>`<th>${i+1}</th>`).join('') + '</tr>';
+  const rows = r.matrix.map((row,i) =>
+    `<tr><th>${i+1}. ${esc(r.texts[i])}</th>` +
+    row.map((v,j) => `<td style="opacity:${i===j?0.4:1}">${v.toFixed(3)}</td>`).join('') + '</tr>').join('');
+  $('#compare-out').innerHTML =
+    `<h3>Matriz de similaridade de cosseno</h3><table>${head}${rows}</table>` +
+    `<h3>Pares mais parecidos</h3>` +
+    r.pairs.map(p => `
+      <div class="hit">
+        <div class="hit-head"><span>${esc(p.a)} ↔ ${esc(p.b)}</span>
+        <span class="score">${p.similarity.toFixed(4)}</span></div>
+        <div class="bar"><i style="width:${Math.max(0,Math.min(1,p.similarity))*100}%"></i></div>
+      </div>`).join('');
+});
+
+// -------------------------------------------------------------- ingest
+$('#btn-ingest').onclick = () => busy($('#btn-ingest'), async () => {
+  const r = await api('/ingest/text', { source: $('#isource').value, text: $('#itext').value });
+  $('#ingest-out').innerHTML = `<h3>Indexado</h3><pre>${esc(JSON.stringify(r,null,2))}</pre>`;
+  refreshStats();
+});
+$('#btn-reindex').onclick = () => busy($('#btn-reindex'), async () => {
+  const r = await api('/ingest/docs', {});
+  $('#ingest-out').innerHTML = `<h3>Reindexado</h3><pre>${esc(JSON.stringify(r,null,2))}</pre>`;
+  refreshStats();
+});
+$('#btn-clear').onclick = () => busy($('#btn-clear'), async () => {
+  if(!confirm('Apagar todo o índice?')) return;
+  const r = await api('/index', null, 'DELETE');
+  $('#ingest-out').innerHTML = `<h3>Índice limpo</h3><pre>${esc(JSON.stringify(r,null,2))}</pre>`;
+  refreshStats();
+});
+
+refreshStats();
+</script>
+</body>
+</html>
