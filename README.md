@@ -38,17 +38,45 @@ resoluções e citação por página.
 
 ## Como rodar
 
+**Linux / macOS**
+
 ```bash
 ./run.sh                 # cria a venv, instala e sobe em http://127.0.0.1:8000
 ```
 
+**Windows**
+
+```bat
+run.bat
+```
+
+No PowerShell, `.\run.bat`. O script já resolve a diferença de nome do
+interpretador: no Windows não existe `python3` — o comando é `python`, ou o
+launcher `py -3`, que é o mais confiável quando há mais de uma versão instalada.
+Se nenhum dos dois responder, o Python não está no PATH: reinstale pelo
+[python.org](https://www.python.org/downloads/) marcando **"Add python.exe to
+PATH"** (a versão da Microsoft Store costuma dar dor de cabeça com venv).
+
 Ou manualmente:
 
 ```bash
+# Linux / macOS
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/uvicorn app.main:app --reload
 ```
+
+```bat
+:: Windows
+py -3 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m uvicorn app.main:app --reload
+```
+
+A venv do Windows guarda os executáveis em `.venv\Scripts\` (e não em
+`.venv/bin/`). Chamar `.venv\Scripts\python -m <modulo>` funciona sem precisar
+ativar a venv — é o que os exemplos deste README fazem, trocando o prefixo
+`./.venv/bin/python` por `.venv\Scripts\python`.
 
 Abra <http://127.0.0.1:8000> para a interface e <http://127.0.0.1:8000/docs>
 para o Swagger.
